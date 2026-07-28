@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>掌上烟花</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { width: 100vw; height: 100vh; overflow: hidden; background: #0a0a1a; font-family: Arial, sans-serif; }
+
+        /* 烟花画布 */
+        #trails-canvas, #main-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #trails-canvas { z-index: 1; }
+        #main-canvas { z-index: 2; pointer-events: none; }
+
+        /* 摄像头容器 */
+        .camera-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 320px;
+            height: 240px;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.5);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            cursor: grab;
+        }
+        .camera-container.dragging { cursor: grabbing; }
+        #video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        #handCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+    </style>
+</head>
+<body>
+    <!-- 烟花画布 -->
+    <canvas id="trails-canvas"></canvas>
+    <canvas id="main-canvas"></canvas>
+
+    <!-- 摄像头容器 -->
+    <div class="camera-container" id="cameraContainer">
+        <video id="video" playsinline></video>
+        <canvas id="handCanvas"></canvas>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script>
+        // ==================== 烟花系统 ====================
+        const COLOR = {
+            Red: "#ff0043", Green: "#14fc56", Blue: "#1e7fff",
+            Purple: "#e60aff", Gold: "#ffbf36", White: "#ffffff"
+        };
+        const COLOR_CODES = Object.values(COLOR);
+        const INVISIBLE = "_INVISIBLE_";
+        const GRAVITY = 0.9;
+        const PI_2 = Math.PI * 2;
+
+        let stageW, stageH;
+        let trailsCanvas, mainCanvas, trailsCtx, mainCtx;
+
+        // 粒子池
+        const Star = {
+            airDrag: 0.98, airDragHeavy: 0.992,
+            active: {}, _pool: [], _new() { return {}; },
+            init() { COLOR_CODES.concat([INVISIBLE]).forEach(c => this.active[c] = []); }
+        };
+
+        const Spark = {
+            airDrag: 0.9, drawWidth: 0.75,
+            active: {}, _pool: [], _new() { return {}; },
+            init() { COLOR_CODES.forEach(c => this.active[c] = []); }
+        };
+
+        const BurstFlash = { active: [], _pool: [], add(x, y, radius) {
+            const i = this._pool.pop() || {};
+            i.x = x; i.y = y; i.radius = radius;
+            this.active.push(i);
+        }};
+
+        function randomColorSimple() {
+            return COLOR_CODES[(Math.random() * COLOR_CODES.length) | 0];
+        }
+
+        // 烟花类型
+        function crysanthemumShell(size = 1) {
+            const glitter = Math.random() < 0.25;
+            const singleColor = Math.random() < 0.72;
+            const color = singleColor ? randomColorSimple() : [randomColorSimple(), randomColorSimple()];
+            const pistil = singleColor && Math.random() < 0.42;
+            return {
+                shellSize: size,
+                spreadSize: 200 + size * 120 + Math.random() * 50, // 随机尺寸
+                starLife: 900 + size * 200,
+                starDensity: glitter ? 1.1 : 1.25,
+                color, glitter: glitter ? "light" : "",
+                glitterColor: COLOR.Gold, pistil,
+                pistilColor: pistil ? (color === COLOR.White || color === COLOR.Gold ? randomColorSimple() : COLOR.Gold) : null
+            };
+        }
+
+        function crackleShell(size = 1) {
+            const color = Math.random() < 0.75 ? COLOR.Gold : randomColorSimple();
+            return {
+                shellSize: size,
+                spreadSize: 220 + size * 90 + Math.random() * 40, // 随机尺寸
+                starDensity: 1, starLife: 600 + size * 100,
+                glitter: "light", glitterColor: COLOR.Gold,
+                color, crackle: true, pistil: Math.random() < 0.65,
+                pistilColor: COLOR.Gold
+            };
+        }
+
+        function randomShell() {
+            const types = [crysanthemumShell, crackleShell];
+            return types[Math.floor(Math.random() * types.length)](0.8 + Math.random() * 1.2); // 随机大小 0.8-2
+        }
+
+        function createParticleArc(start, arcLength, count, randomness, particleFactory) {
+            const angleDelta = arcLength / count;
+            const end = start + arcLength - angleDelta * 0.5;
+            for (let angle = start; angle < end; angle = angle + angleDelta) {
+                particleFactory(angle + Math.random() * angleDelta * randomness);
+            }
+        }
+
+        function createBurst(count, particleFactory) {
+            // 简化的球形爆炸
+            for (let i = 0; i < count; i++) {
+                // 均匀分布的角度
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                // 转换为 x, y 坐标（忽略 z，我们只需要 2D）
+                const angle = theta;
+                const speedMult = Math.sin(phi);
+                particleFactory(angle, speedMult);
+            }
+        }
+
+        class Shell {
+            constructor(options) {
+                Object.assign(this, options);
+                this.starLifeVariation = options.starLifeVariation || 0.125;
+                this.color = options.color || randomColorSimple();
+                this.glitterColor = options.glitterColor || this.color;
+                if (!this.starCount) {
+                    // 增加粒子数量
+                    this.starCount = Math.max(80, Math.floor((this.spreadSize / 54) * (this.spreadSize / 54) * (options.starDensity || 1) * 0.8));
+                }
+            }
+
+            launch(position, launchHeight) {
+                const hpad = 60, vpad = 50;
+                const minHeightPercent = 0.5 + Math.random() * 0.1;
+                const minHeight = stageH - stageH * minHeightPercent;
+                const launchX = position * (stageW - hpad * 2) + hpad;
+                const launchY = stageH;
+                const burstY = minHeight - launchHeight * (minHeight - vpad);
+                const launchDistance = launchY - burstY;
+
+                const launchVelocity = Math.pow(launchDistance * 0.05, 0.64);
+
+                const life = launchVelocity * 250;
+                const self = this;
+
+                const comet = Star.add(
+                    launchX, launchY,
+                    typeof this.color === "string" ? this.color : COLOR.White,
+                    Math.PI, launchVelocity,
+                    life
+                );
+                comet.heavy = true;
+                comet.spinRadius = 0.32 + Math.random() * 0.53;
+                comet.sparkFreq = 32;
+                comet.sparkLife = 320;
+                comet.sparkLifeVariation = 3;
+                comet.burstY = burstY;
+                comet.onDeath = (c) => self.burst(c.x, c.y);
+
+                // 添加一个更新钩子，当粒子到达目标高度时立即触发爆炸
+                comet.updateHook = function() {
+                    if (this.y <= this.burstY) {
+                        this.life = 0;
+                    }
+                };
+            }
+
+            burst(x, y) {
+                const speed = this.spreadSize / 80; // 稍微减小速度
+                let color = typeof this.color === "string" ? this.color : randomColorSimple();
+                let sparkFreq = 0, sparkSpeed = 1, sparkLife = 750, sparkLifeVariation = 0.25;
+
+                if (this.glitter === "light") { sparkFreq = 400; sparkSpeed = 0.3; sparkLife = 300; sparkLifeVariation = 2; }
+                else if (this.glitter === "medium") { sparkFreq = 200; sparkSpeed = 0.44; sparkLife = 700; sparkLifeVariation = 2; }
+                else if (this.glitter === "heavy") { sparkFreq = 80; sparkSpeed = 0.8; sparkLife = 1400; sparkLifeVariation = 2; }
+                else if (this.glitter === "willow") { sparkFreq = 120; sparkSpeed = 0.34; sparkLife = 1400; sparkLifeVariation = 3.8; }
+
+                const self = this;
+                const starFactory = (angle, speedMult) => {
+                    const star = Star.add(
+                        x, y, color, angle, speedMult * speed,
+                        // 稍微减少星星寿命
+                        (this.starLife + Math.random() * this.starLife * this.starLifeVariation) * 0.7
+                    );
+                    if (this.glitter) {
+                        star.sparkFreq = sparkFreq;
+                        star.sparkSpeed = sparkSpeed;
+                        star.sparkLife = sparkLife;
+                        star.sparkLifeVariation = sparkLifeVariation;
+                        star.sparkColor = this.glitterColor;
+                        star.sparkTimer = Math.random() * star.sparkFreq;
+                    }
+                    star.onDeath = this.crackle ? () => {
+                        Spark.add(star.x, star.y, COLOR.Gold, Math.random() * PI_2, Math.pow(Math.random(), 0.45) * 2.4, 300 + Math.random() * 200);
+                    } : null;
+                };
+
+                createBurst(this.starCount, starFactory);
+
+                if (this.pistil) {
+                    const inner = new Shell({
+                        spreadSize: this.spreadSize * 0.5, starLife: this.starLife * 0.4,
+                        starDensity: 1.4, color: this.pistilColor || COLOR.White,
+                        glitter: "light", glitterColor: COLOR.White
+                    });
+                    inner.burst(x, y);
+                }
+
+                BurstFlash.add(x, y, this.spreadSize / 4);
+            }
+        }
+
+        Star.init();
+        Spark.init();
+
+        function initFireworks() {
+            trailsCanvas = document.getElementById('trails-canvas');
+            mainCanvas = document.getElementById('main-canvas');
+            trailsCtx = trailsCanvas.getContext('2d');
+            mainCtx = mainCanvas.getContext('2d');
+
+            const dpr = window.devicePixelRatio || 1;
+            stageW = window.innerWidth;
+            stageH = window.innerHeight;
+
+            trailsCanvas.width = stageW * dpr;
+            trailsCanvas.height = stageH * dpr;
+            mainCanvas.width = stageW * dpr;
+            mainCanvas.height = stageH * dpr;
+            trailsCanvas.style.width = mainCanvas.style.width = stageW + 'px';
+            trailsCanvas.style.height = mainCanvas.style.height = stageH + 'px';
+            trailsCtx.scale(dpr, dpr);
+            mainCtx.scale(dpr, dpr);
+        }
+
+        function launchFirework(screenX, screenY) {
+            const now = Date.now();
+            if (now - lastFireworkTime < 800) return;
+            lastFireworkTime = now;
+
+            const x = screenX / stageW;
+            const y = screenY / stageH;
+
+            const shell = new Shell(randomShell());
+            shell.launch(x, 1 - y);
+        }
+
+        let lastFireworkTime = 0;
+        let currentFrame = 0;
+        let lastTime = 0;
+
+        let frameCount = 0;
+        function fireworkLoop(timestamp) {
+            frameCount++;
+
+            const timeStep = timestamp - lastTime;
+            lastTime = timestamp;
+
+            // 调试用：每60帧输出一次粒子总数
+            // if (currentFrame > 0 && currentFrame % 60 === 0) {
+            //     const totalStars = Object.values(Star.active).reduce((sum, arr) => sum + arr.length, 0);
+            //     const totalSparks = Object.values(Spark.active).reduce((sum, arr) => sum + arr.length, 0);
+            //     console.log('帧:', currentFrame, '星星:', totalStars, '火花:', totalSparks);
+            // }
+
+            if (timeStep > 0 && timeStep < 100) {
+                const speed = 1;
+                const gAcc = (timeStep / 1000) * GRAVITY;
+                currentFrame++;
+
+                const starDrag = 1 - (1 - Star.airDrag) * speed;
+                const starDragHeavy = 1 - (1 - Star.airDragHeavy) * speed;
+
+                COLOR_CODES.concat([INVISIBLE]).forEach(color => {
+                    const stars = Star.active[color];
+                    for (let i = stars.length - 1; i >= 0; i--) {
+                        const star = stars[i];
+                        if (star.updateFrame === currentFrame) continue;
+                        star.updateFrame = currentFrame;
+
+                        star.life -= timeStep;
+
+                        // 更新位置
+                        const burnRate = Math.pow(star.life / star.fullLife, 0.5);
+                        const burnRateInverse = 1 - burnRate;
+
+                        star.prevX = star.x;
+                        star.prevY = star.y;
+                        star.x += star.speedX * speed;
+                        star.y += star.speedY * speed;
+
+                        if (!star.heavy) {
+                            star.speedX *= starDrag;
+                            star.speedY *= starDrag;
+                        } else {
+                            star.speedX *= starDragHeavy;
+                            star.speedY *= starDragHeavy;
+                        }
+                        star.speedY += gAcc;
+
+                        if (star.spinRadius) {
+                            star.spinAngle += star.spinSpeed * speed;
+                            star.x += Math.sin(star.spinAngle) * star.spinRadius * speed;
+                            star.y += Math.cos(star.spinAngle) * star.spinRadius * speed;
+                        }
+
+                        // 如果有更新钩子，在位置更新后执行
+                        if (star.updateHook) {
+                            star.updateHook();
+                        }
+
+                        if (star.life <= 0) {
+                            // 调用 onDeath 回调
+                            if (star.onDeath) {
+                                star.onDeath(star);
+                            }
+
+                            if (star.sparkFreq) {
+                                star.sparkTimer -= timeStep;
+                                while (star.sparkTimer < 0) {
+                                    star.sparkTimer += star.sparkFreq * 0.75 + star.sparkFreq * burnRateInverse * 4;
+                                    Spark.add(
+                                        star.x, star.y, star.sparkColor,
+                                        Math.random() * PI_2,
+                                        Math.random() * star.sparkSpeed * burnRate,
+                                        star.sparkLife * 0.8 + Math.random() * star.sparkLifeVariation * star.sparkLife
+                                    );
+                                }
+                            }
+
+                            if (star.life < star.transitionTime && star.secondColor && !star.colorChanged) {
+                                star.colorChanged = true;
+                                star.color = star.secondColor;
+                                stars.splice(i, 1);
+                                Star.active[star.secondColor].push(star);
+                                if (star.secondColor === INVISIBLE) star.sparkFreq = 0;
+                            } else {
+                                stars.splice(i, 1);
+                            }
+                        }
+                    }
+
+                    const sparks = Spark.active[color];
+                    if (sparks) {
+                        const sparkDrag = 1 - (1 - Spark.airDrag) * speed;
+                        for (let i = sparks.length - 1; i >= 0; i--) {
+                            const spark = sparks[i];
+                            spark.life -= timeStep;
+                            if (spark.life <= 0) {
+                                sparks.splice(i, 1);
+                            } else {
+                                spark.prevX = spark.x;
+                                spark.prevY = spark.y;
+                                spark.x += spark.speedX * speed;
+                                spark.y += spark.speedY * speed;
+                                spark.speedX *= sparkDrag;
+                                spark.speedY *= sparkDrag;
+                                spark.speedY += gAcc;
+                            }
+                        }
+                    }
+                });
+
+                trailsCtx.fillStyle = "rgba(0, 0, 0, 0.175)";
+                trailsCtx.fillRect(0, 0, stageW, stageH);
+                mainCtx.clearRect(0, 0, stageW, stageH);
+
+                BurstFlash.active.forEach(bf => {
+                    const g = trailsCtx.createRadialGradient(bf.x, bf.y, 0, bf.x, bf.y, bf.radius);
+                    g.addColorStop(0.024, "rgba(255, 255, 255, 1)");
+                    g.addColorStop(0.125, "rgba(255, 160, 20, 0.2)");
+                    g.addColorStop(0.32, "rgba(255, 140, 20, 0.11)");
+                    g.addColorStop(1, "rgba(255, 120, 20, 0)");
+                    trailsCtx.fillStyle = g;
+                    trailsCtx.fillRect(bf.x - bf.radius, bf.y - bf.radius, bf.radius * 2, bf.radius * 2);
+                });
+                BurstFlash.active = [];
+
+                trailsCtx.lineWidth = 3;
+                trailsCtx.lineCap = "round";
+                COLOR_CODES.forEach(color => {
+                    const stars = Star.active[color];
+                    if (!stars.length) return;
+
+                    trailsCtx.strokeStyle = color;
+                    trailsCtx.beginPath();
+                    stars.forEach(star => {
+                        if (star.visible !== false) {
+                            trailsCtx.moveTo(star.x, star.y);
+                            trailsCtx.lineTo(star.prevX, star.prevY);
+                        }
+                    });
+                    trailsCtx.stroke();
+                });
+
+                trailsCtx.lineWidth = Spark.drawWidth;
+                trailsCtx.lineCap = "butt";
+                COLOR_CODES.forEach(color => {
+                    const sparks = Spark.active[color];
+                    if (!sparks.length) return;
+                    trailsCtx.strokeStyle = color;
+                    trailsCtx.beginPath();
+                    sparks.forEach(spark => {
+                        trailsCtx.moveTo(spark.x, spark.y);
+                        trailsCtx.lineTo(spark.prevX, spark.prevY);
+                    });
+                    trailsCtx.stroke();
+                });
+            }
+
+            requestAnimationFrame(fireworkLoop);
+        }
+
+        Star.add = function(x, y, color, angle, speed, life, speedOffX, speedOffY, size = 3) {
+            const instance = this._pool.pop() || this._new();
+            instance.visible = true; instance.heavy = false;
+            instance.x = x; instance.y = y;
+            instance.prevX = x; instance.prevY = y;
+            instance.color = color;
+            instance.speedX = Math.sin(angle) * speed + (speedOffX || 0);
+            instance.speedY = Math.cos(angle) * speed + (speedOffY || 0);
+            instance.life = life; instance.fullLife = life;
+            instance.size = size;
+            instance.spinAngle = Math.random() * PI_2;
+            instance.spinSpeed = 0.8;
+            instance.spinRadius = 0;
+            instance.sparkFreq = 0; instance.sparkSpeed = 1; instance.sparkTimer = 0;
+            instance.sparkColor = color; instance.sparkLife = 750; instance.sparkLifeVariation = 0.25;
+            instance.onDeath = null; instance.secondColor = null;
+            instance.transitionTime = 0; instance.colorChanged = false;
+            this.active[color].push(instance);
+            return instance;
+        };
+
+        Spark.add = function(x, y, color, angle, speed, life) {
+            const instance = this._pool.pop() || this._new();
+            instance.x = x; instance.y = y;
+            instance.prevX = x; instance.prevY = y;
+            instance.color = color;
+            instance.speedX = Math.sin(angle) * speed;
+            instance.speedY = Math.cos(angle) * speed;
+            instance.life = life;
+            this.active[color].push(instance);
+            return instance;
+        };
+
+        // ==================== 手势识别 ====================
+        let lastGesture = 'unknown';
+        let gestureHistory = [];
+        const HISTORY_LENGTH = 5;
+
+        function detectGesture(landmarks) {
+            const wrist = landmarks[0];
+            const fingers = [{tip: 8, base: 5}, {tip: 12, base: 9}, {tip: 16, base: 13}, {tip: 20, base: 17}];
+            let extendedFingers = 0;
+            fingers.forEach(f => {
+                const tip = landmarks[f.tip];
+                const base = landmarks[f.base];
+                const tipToWrist = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+                const baseToWrist = Math.hypot(base.x - wrist.x, base.y - wrist.y);
+                if (tipToWrist > baseToWrist * 1.2) extendedFingers++;
+            });
+            return extendedFingers === 0 ? 'fist' : extendedFingers >= 3 ? 'open' : 'unknown';
+        }
+
+        function getPalmCenter(landmarks) {
+            return {
+                x: (landmarks[0].x + landmarks[9].x) / 2,
+                y: (landmarks[0].y + landmarks[9].y) / 2
+            };
+        }
+
+        function detectGestureChange(gesture, screenX, screenY) {
+            gestureHistory.push(gesture);
+            if (gestureHistory.length > HISTORY_LENGTH) gestureHistory.shift();
+
+            const fistCount = gestureHistory.filter(g => g === 'fist').length;
+            const openCount = gestureHistory.filter(g => g === 'open').length;
+
+            let stableGesture = 'unknown';
+            if (fistCount >= HISTORY_LENGTH * 0.6) stableGesture = 'fist';
+            else if (openCount >= HISTORY_LENGTH * 0.6) stableGesture = 'open';
+
+            if (lastGesture === 'fist' && stableGesture === 'open') {
+                launchFirework(screenX, screenY);
+            }
+            if (stableGesture !== 'unknown') lastGesture = stableGesture;
+        }
+
+        function onResults(results) {
+            const canvas = document.getElementById('handCanvas');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+                    drawLandmarks(ctx, landmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+
+                    const gesture = detectGesture(landmarks);
+                    const palmCenter = getPalmCenter(landmarks);
+                    const screenX = (1 - palmCenter.x) * window.innerWidth;
+                    const screenY = palmCenter.y * window.innerHeight;
+                    detectGestureChange(gesture, screenX, screenY);
+                });
+            }
+        }
+
+        // ==================== 摄像头拖动 ====================
+        function initCameraDrag() {
+            const container = document.getElementById('cameraContainer');
+            let isDragging = false, offsetX, offsetY;
+
+            container.addEventListener('pointerdown', e => {
+                if (e.button !== 0) return;
+                isDragging = true;
+                offsetX = e.clientX - container.offsetLeft;
+                offsetY = e.clientY - container.offsetTop;
+                container.classList.add('dragging');
+            });
+            document.addEventListener('pointermove', e => {
+                if (!isDragging) return;
+                container.style.left = (e.clientX - offsetX) + 'px';
+                container.style.top = (e.clientY - offsetY) + 'px';
+                container.style.right = 'auto';
+            });
+            document.addEventListener('pointerup', () => {
+                isDragging = false;
+                container.classList.remove('dragging');
+            });
+        }
+
+        // ==================== 初始化 ====================
+        async function init() {
+            initFireworks();
+            requestAnimationFrame(fireworkLoop);
+
+            initCameraDrag();
+
+            const hands = new Hands({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+            hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+            hands.onResults(onResults);
+
+            const video = document.getElementById('video');
+            const handCanvas = document.getElementById('handCanvas');
+            handCanvas.width = 320;
+            handCanvas.height = 240;
+
+            const camera = new Camera(video, {
+                onFrame: async () => { await hands.send({ image: video }); },
+                width: 320, height: 240
+            });
+
+            try {
+                await camera.start();
+            } catch (error) {
+                console.error('摄像头错误:', error.message);
+            }
+        }
+
+        window.addEventListener('resize', () => {
+            stageW = window.innerWidth;
+            stageH = window.innerHeight;
+            const dpr = window.devicePixelRatio || 1;
+            trailsCanvas.width = stageW * dpr;
+            trailsCanvas.height = stageH * dpr;
+            mainCanvas.width = stageW * dpr;
+            mainCanvas.height = stageH * dpr;
+            trailsCtx.scale(dpr, dpr);
+            mainCtx.scale(dpr, dpr);
+        });
+
+        init();
+    </script>
+</body>
+</html>
