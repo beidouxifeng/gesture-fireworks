@@ -105,4 +105,4 @@ python -m http.server 8000
 
 ---
 
-*Made with ❤️ by 北斗 | 2024*
+*by 北斗 | 2026*
