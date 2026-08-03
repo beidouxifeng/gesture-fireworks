@@ -73,7 +73,7 @@ python -m http.server 8000
 
 ---
 
-## 🛠️ 技术栈
+## 技术栈
 
 | 技术 | 用途 |
 |------|------|
@@ -92,7 +92,7 @@ python -m http.server 8000
 
 ---
 
-## 📄 许可证
+## 许可证
 
 本项目基于 [Apache License 2.0](./Firework_Simulator-2.0/LICENSE) 许可证开源。
 
