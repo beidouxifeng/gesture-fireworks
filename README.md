@@ -1,4 +1,4 @@
-# 🎆 手势识别烟花特效
+# 手势烟花特效
 
 > 挥挥手，就能放烟花！基于 MediaPipe 手势识别 + Canvas 粒子系统的实时交互式烟花模拟器。
 
@@ -7,14 +7,9 @@
 
 ---
 
-## ✨ 效果展示
+## 效果展示
 
-打开摄像头，做出 **握拳 → 张开手掌** 的手势，烟花就会在你手掌所在的位置绽放！
-
-| 手势 | 效果 |
-|------|------|
-| ✊ 握拳 | 蓄力准备 |
-| 🖐️ 张开手掌 | 🎆 发射烟花！ |
+打开摄像头，做出 **握拳 → 张开手掌** 的手势，烟花就会在你手掌所在位置映射到全屏的位置绽放！
 
 ---
 
@@ -34,7 +29,7 @@ npx serve .
 python -m http.server 8000
 ```
 
-> ⚠️ **注意**：因为需要调用摄像头，浏览器可能会弹出权限请求，请点击 **"允许"**。
+> **注意**：因为需要调用摄像头，浏览器可能会弹出权限请求，请点击 **"允许"**。
 
 ### 2. 使用说明
 
@@ -45,7 +40,7 @@ python -m http.server 8000
 
 ---
 
-## 🧠 技术原理
+## 技术原理
 
 ### 手势识别
 - 使用 **MediaPipe Hands** 实时检测手部 21 个关键点
@@ -60,7 +55,7 @@ python -m http.server 8000
 
 ---
 
-## 📁 项目结构
+## 项目结构
 
 ```
 手势烟花/
@@ -89,7 +84,7 @@ python -m http.server 8000
 
 ---
 
-## 🙏 致谢
+## 致谢
 
 - 烟花粒子引擎参考了 [Firework Simulator v2](https://codepen.io/MillerTime/pen/XgpNwb) (CodePen) 和 [NianBroken/Firework_Simulator](https://github.com/NianBroken/Firework_Simulator)
 - 手势识别基于 [Google MediaPipe](https://mediapipe.dev/) 框架
@@ -105,4 +100,4 @@ python -m http.server 8000
 
 ---
 
-*by 北斗 | 2026*
+*作者：北斗惜风 丨 2026*
